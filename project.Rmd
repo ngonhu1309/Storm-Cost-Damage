@@ -1,0 +1,277 @@
+---
+title: "The Comparison of Cost Damage by Storm"
+author: "Nhu Ngo"
+date: "2023-04-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load the library
+```{r, include=FALSE}
+library(dplyr)
+library(lubridate)
+library(kableExtra)
+library(ggplot2)
+library(maps)
+library(sf)
+library(datasets)
+library(ggthemes)
+library(ggmosaic)
+library(tidyr)
+```
+
+## Load the data set
+```{r}
+df_2022 <- read.table(gzfile("C:/Users/Nhu Ngo/Documents/STA 404/Project/StormEvents_details-ftp_v1.0_d2022_c20230317.csv.gz"), header = TRUE, sep = ",") ## Change the data location if needed
+```
+
+## Select the necessary data
+```{r}
+df_22 <- df_2022 %>%
+  select(EPISODE_ID, EVENT_ID, EVENT_TYPE, STATE, STATE_FIPS, BEGIN_DATE_TIME, END_DATE_TIME,CZ_TIMEZONE,
+         INJURIES_DIRECT, INJURIES_INDIRECT, DEATHS_DIRECT, DEATHS_INDIRECT, DAMAGE_PROPERTY,
+         DAMAGE_CROPS, FLOOD_CAUSE, EPISODE_NARRATIVE, EVENT_NARRATIVE, BEGIN_LAT, BEGIN_LON,
+         END_LAT, END_LON)
+```
+
+## Manipulate the data
+```{r, include=FALSE}
+## Change the time zone into the EST time zone
+df_22 <- df_22 %>%
+  mutate(Begin_Date_Time_Timezone = as.POSIXct(dmy_hms(BEGIN_DATE_TIME), tz = CZ_TIMEZONE),
+         Begin_Date_Time = lubridate::with_tz(Begin_Date_Time_Timezone, "America/New_York"), 
+         End_Date_Time_Timezone = as.POSIXct(dmy_hms(END_DATE_TIME), tz = CZ_TIMEZONE),
+         End_Date_Time = lubridate::with_tz(End_Date_Time_Timezone, "America/New_York"),
+         Duration = hour(seconds_to_period(as.difftime(ymd_hms(END_DATE_TIME) - ymd_hms(BEGIN_DATE_TIME)))),
+         Damage_Crops = gsub("K", "", DAMAGE_CROPS)) %>%
+  select(EPISODE_ID, EVENT_ID, EVENT_TYPE, STATE, STATE_FIPS, Begin_Date_Time, End_Date_Time, Duration,
+         INJURIES_DIRECT, INJURIES_INDIRECT, DEATHS_DIRECT, DEATHS_INDIRECT, DAMAGE_PROPERTY,
+         DAMAGE_CROPS, FLOOD_CAUSE, EPISODE_NARRATIVE, EVENT_NARRATIVE, BEGIN_LAT, BEGIN_LON,
+         END_LAT, END_LON)
+
+## Change the data in the damage cost into number
+df_22.final <- df_22 %>%
+  mutate(Damage_Crops = as.integer(gsub("K", "", DAMAGE_CROPS)) * 1000,
+         Damage_Property = as.integer(gsub("K", "", DAMAGE_PROPERTY)) * 1000)
+```
+
+After reading the data dictionary, I realize the date and time were measured based on the locations of the events. So, If I want to compare, I have to change all of them into the same time zone. I choose EST time zone in New York because it is the same time zone in Ohio. Furthermore, we check the structure of the data, we will realize the damage cost in both crops and property is character, so we have to manipulate them into numbers.
+
+## Select only events that did not impact the people's lives
+```{r}
+df_22_no <- df_22.final %>%
+  group_by(EVENT_TYPE) %>%
+  summarize(Indirect = sum(INJURIES_INDIRECT) + sum(DEATHS_INDIRECT),
+            Direct = sum(INJURIES_DIRECT) + sum(DEATHS_DIRECT),
+            Crops = sum(Damage_Crops, na.rm = TRUE),
+            Property = sum (Damage_Property, na.rm = TRUE),
+            Cost = Crops + Property) %>%
+  filter(Indirect == 0 & Direct == 0) %>%
+  select(EVENT_TYPE, Indirect, Direct, Crops, Property, Cost) %>%
+  arrange(desc(Cost))
+
+kbl(df_22_no) %>%
+  kable_paper("striped", full_width = F) %>%
+  row_spec(1:5, bold = T, color = "white", background = "#D7261E")
+```
+
+When I select only the events that do not influence people's lives, there are only 15 events, but only 5 of them have a small impact on the property and only one has the effect on the crops.
+
+## Create a scatter plot to compare the top 5 events
+```{r}
+df_22_no_top5 <- df_22_no %>%
+  slice(0:5)
+
+ggplot(df_22_no_top5, aes(x = Property, y = Crops, color = EVENT_TYPE, size = Cost)) +
+  geom_point() +
+  scale_color_manual(name = "Event Type", values=c("blue", "red", "green", "purple", "orange")) +
+  labs(title = "Relationship between Property Damage Cost and the Crops Damage Cost",
+       subtitle = "These are the top five events that does not hurt anyone in 2022",
+       caption = "Source: NOAA Storm Event Data") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  scale_x_continuous(labels = scales::dollar_format()) +
+  scale_size_continuous(name = "Total Cost:",
+                        labels=scales::dollar_format()) +
+  theme_minimal() +
+  annotate(geom = "label", x = 1500000, y = 10000, 
+           label = "Size conrresponds\nto the total cost",
+           color = "gray60", size = 2)
+```
+Similar to the table, it is clear that except coastal flood, all four events do not have the crops damage cost.
+
+## Select the events that have impacts on the humans'lives
+```{r}
+df_22_yes <- df_22.final %>%
+  group_by(EVENT_TYPE) %>%
+  summarize(Indirect = sum(INJURIES_INDIRECT) + sum(DEATHS_INDIRECT),
+            Direct = sum(INJURIES_DIRECT) + sum(DEATHS_DIRECT),
+            Crops = sum(Damage_Crops, na.rm = TRUE),
+            Property = sum (Damage_Property, na.rm = TRUE),
+            Cost = Crops + Property) %>%
+  mutate(Damage = ifelse(Crops > Property, "Crops", 
+                         ifelse(Crops < Property, "Property", "No Cost"))) %>%
+  filter(Indirect != 0 | Direct != 0) %>%
+  select(EVENT_TYPE, Indirect, Direct, Crops, Property, Cost, Damage) %>%
+  arrange(desc(Cost))
+```
+
+## Create a scatter plot to compare these events
+```{r}
+ggplot(df_22_yes, aes(x = Property, y = Crops, size = Cost, color = Damage)) +
+  geom_point() +
+  scale_color_manual(values = c("red", "blue", "green3")) +
+  labs(title = "Relationship between Property Damage Cost and the Crops Damage Cost",
+       subtitle = "These events have impacts people's lives.",
+       caption = "Source: NOAA Storm Event Data") +
+  scale_y_continuous(labels = scales::dollar_format()) +
+  scale_x_continuous(labels = scales::dollar_format()) +
+  scale_size_continuous(name = "Total Cost:",
+                        breaks = c(0, 30000000, 60000000, 90000000),
+                        labels=scales::dollar_format()) +
+  annotate(geom = "text", x = 100000000, y = 7000000, 
+           label = "Thunderstorm\nWind", color = "green4",
+           fontface = "bold", size = 3.0) +
+  annotate(geom = "text", x = 10000000, y = 17000000, 
+           label = "Drought", color = "red",
+           fontface = "bold", size = 3.0) +
+  theme_minimal() +
+  annotate(geom = "label", x = 95000000, y = 16000000, 
+           label = "Size conrresponds\nto the total cost",
+           color = "gray60", size = 2) 
+```
+
+The color of this graph shows which damage cost is higher when comparing those two in the same events. It is clearly that thunderstorm wind is the biggest in size of total cost and highest in damage property that means it have a huge impact on the property damage cost. Meanwhile, the drought has the an average size of total cost and highest damage cost in crops, that shows it does not cost the most when comparing with thunderstorm wind. However, these data are not enough due to there are a lot of events that influence the humans' lives but do not damage the crops or property.
+
+## Create a map to compare the total damage cost in USA
+```{r}
+df_22_state <- df_22.final %>%
+  group_by(STATE, STATE_FIPS) %>%
+  summarize(sum = sum(Damage_Crops, na.rm = TRUE) + sum(Damage_Property, na.rm = TRUE))
+
+us_map <- map_data("state")
+
+my_table <- us_map %>%
+  mutate(Name = toupper(region))
+
+df_state <- inner_join(my_table, df_22_state, by = c("Name" = "STATE"))
+
+ggplot(df_state) + 
+  geom_polygon(aes(x = long, y = lat, group = group, fill = sum)) +
+  geom_polygon(data = dplyr::filter(df_state, sum == 1000), mapping=aes(x = long, y = lat, group = group), fill = "green", color= "black", linewidth = 1) +
+  geom_polygon(data=dplyr::filter(df_state, sum == 30956000), mapping=aes(x = long, y = lat, group = group), fill = "red", color= "black", linewidth = 1) +
+  labs(title = "The Damage Cost in 56 States in USA in 2022",
+       subtitle = "The lowest damage cost is Delaware, and the highest damage cost is Alabama",
+       caption = "Source: NOAA Storm Event Data") +
+  scale_fill_continuous(name = "Damage Cost", labels=scales::dollar_format()) +
+  theme(legend.position = "right") +
+  theme_map()
+```
+
+From this map, we can assume that in 2022, every state has to spend at least $30,000,000 dollars to repair all the damage for the storm events that happened.
+
+## Select the data to calculate the percentage of damage cost in every month
+```{r}
+df_22.Month <- df_22.final %>%
+  mutate(Date = as.character.Date(Begin_Date_Time),
+         Month = month(Date),
+         Year = year(Date)) %>%
+  filter(Year != 2021)
+
+df <- df_22.Month %>%
+  group_by(Month) %>%
+  summarise(ValueC = sum(Damage_Crops, na.rm = TRUE),
+            ValueP = sum(Damage_Property, na.rm = TRUE),
+            Total = ValueC + ValueP)
+
+df_crop <- df %>%
+  group_by(Month) %>%
+  summarize(PercentC = ValueC/Total)
+
+df_property <- df %>%
+  group_by(Month) %>%
+  summarize(PercentP = ValueP/Total)
+
+df.mosaic <- full_join(df_crop, df_property, by = c("Month"))
+
+df.mosaic <- pivot_longer(df.mosaic, cols = starts_with("Percent"), names_to = "Percent")
+
+df.mosaic$Type <- with(df.mosaic, ifelse(Percent == "PercentC", "Crop", "Property"))
+```
+
+## Create a mosaic plot to compare the months in 2022
+```{r}
+ggplot(df.mosaic) +
+  geom_mosaic(aes(x = product(Month), fill = Type, weight = value)) +
+  labs(x = "Month",
+       y = "Damage Cost",
+       title = "The Proportion of Damge Cost by the Type of Damage For Every Month\nin 2022",
+       subtitle = "From April to October, the damage cost in crops is outstanding, so there must be a\nspecial event that influnce these costs.",
+       caption = "Source: NOAA Storm Event Data") +
+  theme_minimal()
+```
+
+From this mosaic plot, we can see that April to October have a storm event that we should look into. April is the start of the summer, so I can assume that there may be a drought event.
+
+## Filter the data to look closer from April to October
+```{r}
+df_state_month <- df_22.Month %>%
+  filter(Month == 4 | Month == 5 | Month == 6 | Month == 7 | Month == 8 | Month == 9 | Month == 10) %>%
+  select(STATE, Month, Damage_Crops, EVENT_TYPE)
+
+df_state_month_drought <- df_state_month %>%
+  filter(EVENT_TYPE == "Drought") %>%
+  filter(Damage_Crops != 0)
+
+df_state_month <- df_state_month_drought %>%
+  group_by(STATE, Month) %>%
+  summarise(Crops = sum(Damage_Crops, na.rm = TRUE))
+```
+
+From the scatter plot above, we know drought has a huge impact on the damage cost crops, and from what we filter, it also happens many times from April to October.
+
+## Create a scatter plot to compare the damage cost in crops
+```{r}
+ggplot(df_state_month, aes(x = Month, y = Crops, color = STATE)) +
+  geom_point(size = 3) +
+  scale_color_manual(name = "State", values=c("red", "blue", "green", "purple")) +
+  labs(x = "Crops Damage Cost",
+       title = "Relationship between Damage Cost during the Drought Time",
+       subtitle = "Drought Time is from Apirl to October",
+       caption = "Source: NOAA Storm Event Data") +
+  scale_y_continuous(labels=scales::dollar_format()) +
+  scale_x_continuous(breaks = 4:10, labels = 4:10) +
+  theme_minimal()
+```
+
+Minnesota only experienced once in October, but Iowa have been through drought in nearly every month. It seems there is no drought in September, so that means there are a lot of other storm events that happened that month.
+
+## Calculate the 95% confidence interval
+```{r}
+df_CI <- df_state_month_drought %>%
+  group_by(Month) %>%
+  summarize(N = n(),
+            Average_Crops = mean(Damage_Crops),
+            sd = sd(Damage_Crops),
+            Lo.int = Average_Crops - qt((1-0.05/2/6), N-1)*sd/sqrt(N),
+            Hi.int = Average_Crops + qt((1-0.05/2/6), N-1)*sd/sqrt(N))
+```
+
+## Create a plot for 95% confidence interval
+```{r}
+ggplot(df_CI, aes(x = Month)) + 
+  geom_errorbar(aes(ymin = Lo.int, ymax = Hi.int), width=0.25) + 
+  geom_point(aes(y = Average_Crops), size=2.5) +
+  labs(y = "Crops Damage Cost",
+       title = "The Damage Cost in Crops in Six Months during the Drought Event",
+       subtitle = "This is a Bonferoni adjusted 95% confidence inteverals reporting the crops damage cost\nduring the drought months",
+       caption = "Source: NOAA Storm Event Data") +
+  scale_y_continuous(labels=scales::dollar_format()) +
+  scale_x_continuous(breaks = 4:10, labels = 4:10) +
+  theme_minimal()
+```
+
+The graph compares Bonferroni corrected 95% confidence intervals for agricultural damage costs during the drought episode. We can easily see that the 95% confidence intervals for July and October are quite large. The larger the interval, the less precise our estimate and the greater our uncertainty regarding the true population parameter. Although these months are in the fall, the drought still occurred, and the average crop loss cost in October is also the greatest, which is extremely unusual. This depicts the severity of the drought in 2022. 
+
